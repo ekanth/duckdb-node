@@ -14,6 +14,7 @@
 #include "duckdb/storage/table/table_statistics.hpp"
 
 namespace duckdb {
+
 struct ParallelTableScanState;
 struct ParallelCollectionScanState;
 class CreateIndexScanState;
@@ -28,6 +29,8 @@ class BoundConstraint;
 class RowGroupSegmentTree;
 struct ColumnSegmentInfo;
 class MetadataManager;
+struct VacuumState;
+struct CollectionCheckpointState;
 
 class RowGroupCollection {
 public:
@@ -82,9 +85,13 @@ public:
 	idx_t Delete(TransactionData transaction, DataTable &table, row_t *ids, idx_t count);
 	void Update(TransactionData transaction, row_t *ids, const vector<PhysicalIndex> &column_ids, DataChunk &updates);
 	void UpdateColumn(TransactionData transaction, Vector &row_ids, const vector<column_t> &column_path,
-	                  DataChunk &updates);
+	                  DataChunk &updates, bool append_for_update = false, row_t real_row_id = 0);
 
 	void Checkpoint(TableDataWriter &writer, TableStatistics &global_stats);
+
+	void InitializeVacuumState(VacuumState &state, vector<SegmentNode<RowGroup>> &segments);
+	bool ScheduleVacuumTasks(CollectionCheckpointState &checkpoint_state, VacuumState &state, idx_t segment_idx);
+	void ScheduleCheckpointTask(CollectionCheckpointState &checkpoint_state, idx_t segment_idx);
 
 	void CommitDropColumn(idx_t index);
 	void CommitDropTable();

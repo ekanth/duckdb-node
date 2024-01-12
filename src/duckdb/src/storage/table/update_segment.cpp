@@ -21,8 +21,9 @@ static UpdateSegment::rollback_update_function_t GetRollbackUpdateFunction(Physi
 static UpdateSegment::statistics_update_function_t GetStatisticsUpdateFunction(PhysicalType type);
 static UpdateSegment::fetch_row_function_t GetFetchRowFunction(PhysicalType type);
 
-UpdateSegment::UpdateSegment(ColumnData &column_data)
-    : column_data(column_data), stats(column_data.type), heap(BufferAllocator::Get(column_data.GetDatabase())) {
+UpdateSegment::UpdateSegment(ColumnData &column_data, bool append_for_update)
+    : column_data(column_data), stats(column_data.type), heap(BufferAllocator::Get(column_data.GetDatabase())),
+	  append_for_update(append_for_update) {
 	auto physical_type = column_data.type.InternalType();
 
 	this->type_size = GetTypeIdSize(physical_type);
@@ -51,6 +52,10 @@ Value UpdateInfo::GetValue(idx_t index) {
 		return Value::BOOLEAN(reinterpret_cast<bool *>(tuple_data)[index]);
 	case LogicalTypeId::INTEGER:
 		return Value::INTEGER(reinterpret_cast<int32_t *>(tuple_data)[index]);
+	case LogicalTypeId::BIGINT:
+		return Value::BIGINT(reinterpret_cast<int64_t *>(tuple_data)[index]);
+	case LogicalTypeId::VARCHAR:
+		return Value(reinterpret_cast<string_t *>(tuple_data)[index]);
 	default:
 		throw NotImplementedException("Unimplemented type for UpdateInfo::GetValue");
 	}
@@ -63,7 +68,8 @@ void UpdateInfo::Print() {
 string UpdateInfo::ToString() {
 	auto &type = segment->column_data.type;
 	string result = "Update Info [" + type.ToString() + ", Count: " + to_string(N) +
-	                ", Transaction Id: " + to_string(version_number) + "]\n";
+	                ", Transaction Id: " + to_string(version_number) +
+					", append_for_update: " + to_string(append_for_update) + "]\n";
 	for (idx_t i = 0; i < N; i++) {
 		result += to_string(tuples[i]) + ": " + GetValue(i).ToString() + "\n";
 	}
@@ -76,7 +82,8 @@ string UpdateInfo::ToString() {
 void UpdateInfo::Verify() {
 #ifdef DEBUG
 	for (idx_t i = 1; i < N; i++) {
-		D_ASSERT(tuples[i] > tuples[i - 1] && tuples[i] < STANDARD_VECTOR_SIZE);
+		D_ASSERT(tuples[i] > tuples[i - 1] &&
+				 (append_for_update || tuples[i] < STANDARD_VECTOR_SIZE));
 	}
 #endif
 }
@@ -143,6 +150,8 @@ static UpdateSegment::fetch_update_function_t GetFetchUpdateFunction(PhysicalTyp
 		return UpdateMergeFetch<uint64_t>;
 	case PhysicalType::INT128:
 		return UpdateMergeFetch<hugeint_t>;
+	case PhysicalType::UINT128:
+		return UpdateMergeFetch<uhugeint_t>;
 	case PhysicalType::FLOAT:
 		return UpdateMergeFetch<float>;
 	case PhysicalType::DOUBLE:
@@ -208,6 +217,8 @@ static UpdateSegment::fetch_committed_function_t GetFetchCommittedFunction(Physi
 		return TemplatedFetchCommitted<uint64_t>;
 	case PhysicalType::INT128:
 		return TemplatedFetchCommitted<hugeint_t>;
+	case PhysicalType::UINT128:
+		return TemplatedFetchCommitted<uhugeint_t>;
 	case PhysicalType::FLOAT:
 		return TemplatedFetchCommitted<float>;
 	case PhysicalType::DOUBLE:
@@ -304,6 +315,8 @@ static UpdateSegment::fetch_committed_range_function_t GetFetchCommittedRangeFun
 		return TemplatedFetchCommittedRange<uint64_t>;
 	case PhysicalType::INT128:
 		return TemplatedFetchCommittedRange<hugeint_t>;
+	case PhysicalType::UINT128:
+		return TemplatedFetchCommittedRange<uhugeint_t>;
 	case PhysicalType::FLOAT:
 		return TemplatedFetchCommittedRange<float>;
 	case PhysicalType::DOUBLE:
@@ -406,6 +419,8 @@ static UpdateSegment::fetch_row_function_t GetFetchRowFunction(PhysicalType type
 		return TemplatedFetchRow<uint64_t>;
 	case PhysicalType::INT128:
 		return TemplatedFetchRow<hugeint_t>;
+	case PhysicalType::UINT128:
+		return TemplatedFetchRow<uhugeint_t>;
 	case PhysicalType::FLOAT:
 		return TemplatedFetchRow<float>;
 	case PhysicalType::DOUBLE:
@@ -473,6 +488,8 @@ static UpdateSegment::rollback_update_function_t GetRollbackUpdateFunction(Physi
 		return RollbackUpdate<uint64_t>;
 	case PhysicalType::INT128:
 		return RollbackUpdate<hugeint_t>;
+	case PhysicalType::UINT128:
+		return RollbackUpdate<uhugeint_t>;
 	case PhysicalType::FLOAT:
 		return RollbackUpdate<float>;
 	case PhysicalType::DOUBLE:
@@ -491,8 +508,8 @@ void UpdateSegment::RollbackUpdate(UpdateInfo &info) {
 	auto lock_handle = lock.GetExclusiveLock();
 
 	// move the data from the UpdateInfo back into the base info
-	D_ASSERT(root->info[info.vector_index]);
-	rollback_update_function(*root->info[info.vector_index]->info, info);
+	D_ASSERT(root->info[info.real_vector_index]);
+	rollback_update_function(*root->info[info.real_vector_index]->info, info);
 
 	// clean up the update chain
 	CleanupUpdateInternal(*lock_handle, info);
@@ -514,6 +531,10 @@ void UpdateSegment::CleanupUpdate(UpdateInfo &info) {
 	// obtain an exclusive lock
 	auto lock_handle = lock.GetExclusiveLock();
 	CleanupUpdateInternal(*lock_handle, info);
+}
+
+bool UpdateSegment::IsAppendForUpdate() const {
+	return append_for_update;
 }
 
 //===--------------------------------------------------------------------===//
@@ -557,7 +578,8 @@ static void CheckForConflicts(UpdateInfo *info, TransactionData transaction, row
 // Initialize update info
 //===--------------------------------------------------------------------===//
 void UpdateSegment::InitializeUpdateInfo(UpdateInfo &info, row_t *ids, const SelectionVector &sel, idx_t count,
-                                         idx_t vector_index, idx_t vector_offset) {
+                                         idx_t vector_index, idx_t vector_offset, bool append_for_update,
+										 const vector<row_t> &real_row_ids) {
 	info.segment = this;
 	info.vector_index = vector_index;
 	info.prev = nullptr;
@@ -568,7 +590,8 @@ void UpdateSegment::InitializeUpdateInfo(UpdateInfo &info, row_t *ids, const Sel
 	for (idx_t i = 0; i < count; i++) {
 		auto idx = sel.get_index(i);
 		auto id = ids[idx];
-		D_ASSERT(idx_t(id) >= vector_offset && idx_t(id) < vector_offset + STANDARD_VECTOR_SIZE);
+		D_ASSERT(idx_t(id) >= vector_offset &&
+				 (append_for_update || idx_t(id) < vector_offset + STANDARD_VECTOR_SIZE));
 		info.tuples[i] = id - vector_offset;
 	};
 }
@@ -660,6 +683,8 @@ static UpdateSegment::initialize_update_function_t GetInitializeUpdateFunction(P
 		return InitializeUpdateData<uint64_t>;
 	case PhysicalType::INT128:
 		return InitializeUpdateData<hugeint_t>;
+	case PhysicalType::UINT128:
+		return InitializeUpdateData<uhugeint_t>;
 	case PhysicalType::FLOAT:
 		return InitializeUpdateData<float>;
 	case PhysicalType::DOUBLE:
@@ -754,8 +779,11 @@ static void MergeUpdateLoopInternal(UpdateInfo *base_info, V *base_table_data, U
 	// together with (2)
 	// to simplify this, we create new arrays here
 	// we memcpy these over afterwards
-	T result_values[STANDARD_VECTOR_SIZE];
-	sel_t result_ids[STANDARD_VECTOR_SIZE];
+	auto result_vector_size = base_info->max;
+	auto result_values_data = make_uniq_array<char>(sizeof(T) * result_vector_size);
+	auto result_values = reinterpret_cast<T *>(result_values_data.get());
+	auto result_ids_data = make_uniq_array<char>(sizeof(sel_t) * result_vector_size);
+	auto result_ids = reinterpret_cast<sel_t *>(result_ids_data.get());
 
 	idx_t base_info_offset = 0;
 	idx_t update_info_offset = 0;
@@ -867,6 +895,8 @@ static UpdateSegment::merge_update_function_t GetMergeUpdateFunction(PhysicalTyp
 		return MergeUpdateLoop<uint64_t>;
 	case PhysicalType::INT128:
 		return MergeUpdateLoop<hugeint_t>;
+	case PhysicalType::UINT128:
+		return MergeUpdateLoop<uhugeint_t>;
 	case PhysicalType::FLOAT:
 		return MergeUpdateLoop<float>;
 	case PhysicalType::DOUBLE:
@@ -895,7 +925,7 @@ idx_t UpdateValidityStatistics(UpdateSegment *segment, SegmentStatistics &stats,
 	if (!mask.AllValid() && !validity.CanHaveNull()) {
 		for (idx_t i = 0; i < count; i++) {
 			if (!mask.RowIsValid(i)) {
-				validity.SetHasNull();
+				validity.SetHasNullFast();
 				break;
 			}
 		}
@@ -981,6 +1011,8 @@ UpdateSegment::statistics_update_function_t GetStatisticsUpdateFunction(Physical
 		return TemplatedUpdateNumericStatistics<uint64_t>;
 	case PhysicalType::INT128:
 		return TemplatedUpdateNumericStatistics<hugeint_t>;
+	case PhysicalType::UINT128:
+		return TemplatedUpdateNumericStatistics<uhugeint_t>;
 	case PhysicalType::FLOAT:
 		return TemplatedUpdateNumericStatistics<float>;
 	case PhysicalType::DOUBLE:
@@ -1050,11 +1082,12 @@ UpdateInfo *CreateEmptyUpdateInfo(TransactionData transaction, idx_t type_size, 
 	update_info->tuples = reinterpret_cast<sel_t *>((data_ptr_cast(update_info)) + sizeof(UpdateInfo));
 	update_info->tuple_data = (data_ptr_cast(update_info)) + sizeof(UpdateInfo) + sizeof(sel_t) * update_info->max;
 	update_info->version_number = transaction.transaction_id;
+	update_info->append_for_update = false;
 	return update_info;
 }
 
 void UpdateSegment::Update(TransactionData transaction, idx_t column_index, Vector &update, row_t *ids, idx_t count,
-                           Vector &base_data) {
+                           Vector &base_data, bool append_for_update, const vector<row_t> &real_row_ids) {
 	// obtain an exclusive lock
 	auto write_lock = lock.GetExclusiveLock();
 
@@ -1064,7 +1097,7 @@ void UpdateSegment::Update(TransactionData transaction, idx_t column_index, Vect
 	SelectionVector sel;
 	{
 		lock_guard<mutex> stats_guard(stats_lock);
-		count = statistics_update_function(this, stats, update, count, sel);
+		statistics_update_function(this, stats, update, count, sel);
 	}
 	if (count == 0) {
 		return;
@@ -1086,6 +1119,7 @@ void UpdateSegment::Update(TransactionData transaction, idx_t column_index, Vect
 	// we assert that all updates must be part of the same vector
 	auto first_id = ids[sel.get_index(0)];
 	idx_t vector_index = (first_id - column_data.start) / STANDARD_VECTOR_SIZE;
+	idx_t real_vector_index = vector_index;
 	idx_t vector_offset = column_data.start + vector_index * STANDARD_VECTOR_SIZE;
 
 	D_ASSERT(idx_t(first_id) >= column_data.start);
@@ -1120,6 +1154,7 @@ void UpdateSegment::Update(TransactionData transaction, idx_t column_index, Vect
 				node = CreateEmptyUpdateInfo(transaction, type_size, count, update_info_data);
 			}
 			node->segment = this;
+			node->real_vector_index = vector_index;
 			node->vector_index = vector_index;
 			node->N = 0;
 			node->column_index = column_index;
@@ -1151,7 +1186,10 @@ void UpdateSegment::Update(TransactionData transaction, idx_t column_index, Vect
 		result->info->tuple_data = result->tuple_data.get();
 		result->info->version_number = TRANSACTION_ID_START - 1;
 		result->info->column_index = column_index;
-		InitializeUpdateInfo(*result->info, ids, sel, count, vector_index, vector_offset);
+		result->info->append_for_update = append_for_update;
+		result->info->real_vector_index = vector_index;
+		result->info->max = STANDARD_VECTOR_SIZE;
+		InitializeUpdateInfo(*result->info, ids, sel, count, vector_index, vector_offset, append_for_update, real_row_ids);
 
 		// now create the transaction level update info in the undo log
 		unsafe_unique_array<char> update_info_data;
@@ -1161,8 +1199,8 @@ void UpdateSegment::Update(TransactionData transaction, idx_t column_index, Vect
 		} else {
 			transaction_node = CreateEmptyUpdateInfo(transaction, type_size, count, update_info_data);
 		}
-
-		InitializeUpdateInfo(*transaction_node, ids, sel, count, vector_index, vector_offset);
+		transaction_node->real_vector_index = real_vector_index;
+		InitializeUpdateInfo(*transaction_node, ids, sel, count, vector_index, vector_offset, append_for_update, real_row_ids);
 
 		// we write the updates in the update node data, and write the updates in the info
 		initialize_update_function(transaction_node, base_data, result->info.get(), update, sel);
@@ -1176,7 +1214,248 @@ void UpdateSegment::Update(TransactionData transaction, idx_t column_index, Vect
 		transaction_node->Verify();
 		result->info->Verify();
 
-		root->info[vector_index] = std::move(result);
+		root->info[real_vector_index] = std::move(result);
+	}
+}
+
+UpdateInfo *CreateEmptyAppendForUpdateInfo(TransactionData transaction, idx_t type_size, idx_t count,
+                                  unsafe_unique_array<char> &data, const vector<row_t> &real_row_ids) {
+	auto alloc_vector_size = AlignValue<idx_t, STANDARD_VECTOR_SIZE>(count);
+	data = make_unsafe_uniq_array<char>(sizeof(UpdateInfo) + (sizeof(sel_t) + type_size) * alloc_vector_size);
+	auto update_info = reinterpret_cast<UpdateInfo *>(data.get());
+	update_info->max = alloc_vector_size;
+	update_info->tuples = reinterpret_cast<sel_t *>((data_ptr_cast(update_info)) + sizeof(UpdateInfo));
+	update_info->tuple_data = (data_ptr_cast(update_info)) + sizeof(UpdateInfo) + sizeof(sel_t) * update_info->max;
+	update_info->version_number = transaction.transaction_id;
+	update_info->append_for_update = true;
+	update_info->real_row_id = real_row_ids[0];
+	return update_info;
+}
+
+UpdateInfo *ResizeAppendForUpdateInfo(UpdateInfo *old, TransactionData transaction, idx_t type_size, idx_t count,
+                                  unsafe_unique_array<char> &data) {
+	if (old->max >= count) {
+		return old;
+	}
+	auto alloc_vector_size = AlignValue<idx_t, STANDARD_VECTOR_SIZE>(count);
+	data = make_unsafe_uniq_array<char>(sizeof(UpdateInfo) + (sizeof(sel_t) + type_size) * alloc_vector_size);
+	auto update_info = reinterpret_cast<UpdateInfo *>(data.get());
+	update_info->max = alloc_vector_size;
+	update_info->tuples = reinterpret_cast<sel_t *>((data_ptr_cast(update_info)) + sizeof(UpdateInfo));
+	memcpy(update_info->tuples, old->tuples, old->N * sizeof(sel_t));
+	update_info->tuple_data = (data_ptr_cast(update_info)) + sizeof(UpdateInfo) + sizeof(sel_t) * update_info->max;
+	memcpy(update_info->tuple_data, old->tuple_data, old->N * type_size);
+	update_info->version_number = transaction.transaction_id;
+	update_info->segment = old->segment;
+	update_info->vector_index = old->vector_index;
+	update_info->real_vector_index = old->real_vector_index;
+	update_info->column_index = old->column_index;
+	update_info->append_for_update = true;
+	update_info->real_row_id = old->real_row_id;
+	return update_info;
+}
+
+UpdateInfo *UpdateSegment::ResizeBaseUpdateInfo(idx_t real_vector_index, idx_t count, idx_t column_index) {
+	auto base_info = root->info[real_vector_index]->info.get();
+	if (base_info->max >= count) {
+		return base_info;
+	}
+
+	auto node = base_info->next;
+
+	auto old_base_info = std::move(root->info[real_vector_index]->info);
+	auto old_tuples = std::move(root->info[real_vector_index]->tuples);
+	auto old_tuple_data = std::move(root->info[real_vector_index]->tuple_data);
+
+	auto alloc_vector_size = AlignValue<idx_t, STANDARD_VECTOR_SIZE>(count);
+	root->info[real_vector_index]->info = make_uniq<UpdateInfo>();
+	root->info[real_vector_index]->tuples = make_unsafe_uniq_array<sel_t>(alloc_vector_size);
+	root->info[real_vector_index]->tuple_data = make_unsafe_uniq_array<data_t>(alloc_vector_size * type_size);
+	auto new_base_info = root->info[real_vector_index]->info.get();
+	new_base_info->tuples = root->info[real_vector_index]->tuples.get();
+	new_base_info->tuple_data = root->info[real_vector_index]->tuple_data.get();
+	new_base_info->segment = this;
+	new_base_info->prev = nullptr;
+	new_base_info->next = node;
+	new_base_info->version_number = TRANSACTION_ID_START - 1;
+	new_base_info->column_index = column_index;
+	new_base_info->real_vector_index = real_vector_index;
+	new_base_info->vector_index = old_base_info.get()->vector_index;
+	new_base_info->max = alloc_vector_size;
+	new_base_info->N = old_base_info.get()->N;
+	memcpy(new_base_info->tuples, old_tuples.get(), new_base_info->N * sizeof(sel_t));
+	memcpy(new_base_info->tuple_data, old_tuple_data.get(), new_base_info->N * type_size);
+	new_base_info->append_for_update = append_for_update;
+	new_base_info->real_row_id = old_base_info.get()->real_row_id;
+
+	return new_base_info;
+}
+
+void UpdateSegment::AppendForUpdate(TransactionData transaction, idx_t column_index, Vector &update, row_t *ids, idx_t count,
+                           Vector &base_data, bool append_for_update, const vector<row_t> &real_row_ids) {
+	// obtain an exclusive lock
+	auto write_lock = lock.GetExclusiveLock();
+
+	update.Flatten(count);
+
+	// update statistics
+	SelectionVector sel;
+	{
+		lock_guard<mutex> stats_guard(stats_lock);
+		if (append_for_update) {
+			// Do not update count and keep the selection vector as is for appends within update since
+			// empty rows in the vector will be lost otherwise
+			statistics_update_function(this, stats, update, count, sel);
+			sel.Initialize(nullptr);
+		} else {
+			count = statistics_update_function(this, stats, update, count, sel);
+		}
+	}
+	if (count == 0) {
+		return;
+	}
+
+	// subsequent algorithms used by the update require row ids to be (1) sorted, and (2) unique
+	// this is usually the case for "standard" queries (e.g. UPDATE tbl SET x=bla WHERE cond)
+	// however, for more exotic queries involving e.g. cross products/joins this might not be the case
+	// hence we explicitly check here if the ids are sorted and, if not, sort + duplicate eliminate them
+	count = SortSelectionVector(sel, count, ids);
+	D_ASSERT(count > 0);
+
+	// create the versions for this segment, if there are none yet
+	if (!root) {
+		root = make_uniq<UpdateNode>();
+	}
+
+	// get the vector index based on the first id
+	// we assert that all updates must be part of the same vector
+
+	auto real_first_row_id = append_for_update ? real_row_ids[sel.get_index(0)] : ids[sel.get_index(0)];
+	auto first_row_id = ids[sel.get_index(0)];
+	idx_t real_vector_index = (real_first_row_id - column_data.start) / STANDARD_VECTOR_SIZE;
+	idx_t vector_index = (first_row_id - column_data.start) / STANDARD_VECTOR_SIZE;
+	idx_t vector_offset = column_data.start + vector_index * STANDARD_VECTOR_SIZE;
+
+	D_ASSERT(idx_t(first_row_id) >= column_data.start);
+	D_ASSERT(real_vector_index < Storage::ROW_GROUP_VECTOR_COUNT);
+
+	// first check the version chain
+	UpdateInfo *node = nullptr;
+
+	if (root->info[real_vector_index]) {
+		// there is already a version here, check if there are any conflicts and search for the node that belongs to
+		// this transaction in the version chain
+		auto base_info = root->info[real_vector_index]->info.get();
+		// TODO: ekanth: Use real_row_ids when checking for conflict?
+		CheckForConflicts(base_info->next, transaction, ids, sel, count, vector_offset, node);
+
+		auto node = base_info->next;
+		if (base_info->N + count > base_info->max) {
+			base_info = ResizeBaseUpdateInfo(real_vector_index, base_info->N + count, column_index);
+			if (node) {
+				node->prev = base_info;
+			}
+		}
+		// there are no conflicts
+		// first, check if this thread has already done any updates
+		while (node) {
+			if (node->version_number == transaction.transaction_id) {
+				// it has! use this node
+				break;
+			}
+			node = node->next;
+		}
+		unsafe_unique_array<char> update_info_data;
+		if (!node) {
+			// no updates made yet by this transaction: initially the update info to empty
+			if (transaction.transaction) {
+				auto &dtransaction = transaction.transaction->Cast<DuckTransaction>();
+				node = dtransaction.CreateAppendForUpdateInfo(type_size, count, append_for_update, real_row_ids);
+			} else {
+				node = CreateEmptyAppendForUpdateInfo(transaction, type_size, count, update_info_data, real_row_ids);
+			}
+			node->segment = this;
+			node->real_vector_index = real_vector_index;
+			node->vector_index = vector_index;
+			node->N = 0;
+			node->column_index = column_index;
+
+			// insert the new node into the chain
+			node->next = base_info->next;
+			if (node->next) {
+				node->next->prev = node;
+			}
+			node->prev = base_info;
+			base_info->next = transaction.transaction ? node : nullptr;
+		} else if (node->N + count > node->max) {
+			unsafe_unique_array<char> update_info_data;
+			UpdateInfo *new_node = nullptr;
+			if (transaction.transaction) {
+				auto &dtransaction = transaction.transaction->Cast<DuckTransaction>();
+				new_node = dtransaction.ResizeAppendForUpdateInfo(node, type_size, node->N + count);
+			} else {
+				new_node = ResizeAppendForUpdateInfo(node, transaction, type_size, node->N + count, update_info_data);
+			}
+			new_node->prev = node->prev;
+			new_node->next = node->next;
+			if (node->prev) {
+				node->prev->next = new_node;
+			}
+			if (node->next) {
+				node->next->prev = new_node;
+			}
+			node = new_node;
+		}
+
+		base_info->Verify();
+		node->Verify();
+
+		// now we are going to perform the merge
+		merge_update_function(base_info, base_data, node, update, ids, count, sel);
+
+		base_info->Verify();
+		node->Verify();
+	} else {
+		// there is no version info yet: create the top level update info and fill it with the updates
+		auto alloc_vector_size = AlignValue<idx_t, STANDARD_VECTOR_SIZE>(count);
+		auto result = make_uniq<UpdateNodeData>();
+
+		result->info = make_uniq<UpdateInfo>();
+		result->tuples = make_unsafe_uniq_array<sel_t>(alloc_vector_size);
+		result->tuple_data = make_unsafe_uniq_array<data_t>(alloc_vector_size * type_size);
+		result->info->tuples = result->tuples.get();
+		result->info->tuple_data = result->tuple_data.get();
+		result->info->version_number = TRANSACTION_ID_START - 1;
+		result->info->column_index = column_index;
+		result->info->append_for_update = append_for_update;
+		result->info->real_vector_index = real_vector_index;
+		result->info->max = alloc_vector_size;
+		InitializeUpdateInfo(*result->info, ids, sel, count, vector_index, vector_offset, append_for_update, real_row_ids);
+
+		// now create the transaction level update info in the undo log
+		unsafe_unique_array<char> update_info_data;
+		UpdateInfo *transaction_node;
+		if (transaction.transaction) {
+			transaction_node = transaction.transaction->CreateAppendForUpdateInfo(type_size, count, append_for_update, real_row_ids);
+		} else {
+			transaction_node = CreateEmptyAppendForUpdateInfo(transaction, type_size, count, update_info_data, real_row_ids);
+		}
+		transaction_node->real_vector_index = real_vector_index;
+		InitializeUpdateInfo(*transaction_node, ids, sel, count, vector_index, vector_offset, append_for_update, real_row_ids);
+
+		// we write the updates in the update node data, and write the updates in the info
+		initialize_update_function(transaction_node, base_data, result->info.get(), update, sel);
+
+		result->info->next = transaction.transaction ? transaction_node : nullptr;
+		result->info->prev = nullptr;
+		transaction_node->next = nullptr;
+		transaction_node->prev = result->info.get();
+		transaction_node->column_index = column_index;
+
+		transaction_node->Verify();
+		result->info->Verify();
+
+		root->info[real_vector_index] = std::move(result);
 	}
 }
 

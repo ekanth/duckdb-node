@@ -46,6 +46,10 @@ public:
 	              idx_t result_idx) override;
 	void Update(TransactionData transaction, idx_t column_index, Vector &update_vector, row_t *row_ids,
 	            idx_t update_count) override;
+	void AppendForUpdate(TransactionData transaction, idx_t column_index, const vector<row_t> real_row_ids,
+                         BaseStatistics &stats, ColumnAppendState &state, Vector &vector, idx_t count) override;
+	void AppendColumnForUpdate(TransactionData transaction, BaseStatistics &stats, const vector<column_t> &column_path,
+                               Vector &vector, row_t *row_ids, idx_t count, idx_t depth) override;
 	void UpdateColumn(TransactionData transaction, const vector<column_t> &column_path, Vector &update_vector,
 	                  row_t *row_ids, idx_t update_count, idx_t depth) override;
 	unique_ptr<BaseStatistics> GetUpdateStatistics() override;

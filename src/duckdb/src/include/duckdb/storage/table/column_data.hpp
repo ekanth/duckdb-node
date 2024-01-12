@@ -113,6 +113,10 @@ public:
 	                    idx_t update_count);
 	virtual void UpdateColumn(TransactionData transaction, const vector<column_t> &column_path, Vector &update_vector,
 	                          row_t *row_ids, idx_t update_count, idx_t depth);
+	virtual void AppendForUpdate(TransactionData transaction, idx_t column_index, const vector<row_t> real_row_ids,
+                                 BaseStatistics &stats, ColumnAppendState &state, Vector &vector, idx_t count);
+	virtual void AppendColumnForUpdate(TransactionData transaction, BaseStatistics &stats, const vector<column_t> &column_path,
+                                       Vector &vector, row_t *row_ids, idx_t count, idx_t depth);
 	virtual unique_ptr<BaseStatistics> GetUpdateStatistics();
 
 	virtual void CommitDropColumn();

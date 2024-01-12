@@ -2,7 +2,7 @@
   "name": "duckdb",
   "main": "./lib/duckdb.js",
   "types": "./lib/duckdb.d.ts",
-  "version": "0.0.2-dev5.0",
+  "version": "0.9.3-e-1.0",
   "description": "DuckDB node.js API",
   "gypfile": true,
   "dependencies": {
@@ -13,7 +13,7 @@
   "binary": {
     "module_name": "duckdb",
     "module_path": "./lib/binding/",
-    "host": "https://duckdb-node.s3.amazonaws.com"
+    "host": "https://dev-desktop-release.s3.amazonaws.com"
   },
   "scripts": {
     "install": "node-pre-gyp install --fallback-to-build",

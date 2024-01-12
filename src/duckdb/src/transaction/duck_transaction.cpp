@@ -56,6 +56,7 @@ void DuckTransaction::PushCatalogEntry(CatalogEntry &entry, data_ptr_t extra_dat
 	if (extra_data_size > 0) {
 		alloc_size += extra_data_size + sizeof(idx_t);
 	}
+
 	auto baseptr = undo_buffer.CreateEntry(UndoFlags::CATALOG_ENTRY, alloc_size);
 	// store the pointer to the catalog entry
 	Store<CatalogEntry *>(&entry, baseptr);
@@ -98,6 +99,48 @@ UpdateInfo *DuckTransaction::CreateUpdateInfo(idx_t type_size, idx_t entries) {
 	update_info->tuples = reinterpret_cast<sel_t *>(base_info + sizeof(UpdateInfo));
 	update_info->tuple_data = base_info + sizeof(UpdateInfo) + sizeof(sel_t) * update_info->max;
 	update_info->version_number = transaction_id;
+	update_info->append_for_update = false;
+	return update_info;
+}
+
+UpdateInfo *DuckTransaction::CreateAppendForUpdateInfo(idx_t type_size, idx_t entries, bool append_for_update, const vector<row_t> &real_row_ids) {
+	auto alloc_vector_size = AlignValue<idx_t, STANDARD_VECTOR_SIZE>(entries);
+	data_ptr_t base_info = undo_buffer.CreateEntry(
+	    UndoFlags::UPDATE_TUPLE, sizeof(UpdateInfo) + (sizeof(sel_t) + type_size) * alloc_vector_size);
+	auto update_info = reinterpret_cast<UpdateInfo *>(base_info);
+	update_info->max = alloc_vector_size;
+	update_info->tuples = reinterpret_cast<sel_t *>(base_info + sizeof(UpdateInfo));
+	update_info->tuple_data = base_info + sizeof(UpdateInfo) + sizeof(sel_t) * update_info->max;
+	update_info->version_number = transaction_id;
+	update_info->append_for_update = append_for_update;
+	if (append_for_update) {
+		update_info->real_row_id = real_row_ids[0];
+	}
+	return update_info;
+}
+
+UpdateInfo *DuckTransaction::ResizeAppendForUpdateInfo(UpdateInfo *old, idx_t type_size, idx_t entries) {
+	if (old->max >= entries) {
+		return old;
+	}
+
+	auto alloc_vector_size = AlignValue<idx_t, STANDARD_VECTOR_SIZE>(entries);
+	data_ptr_t base_info = undo_buffer.ResizeEntryInPlace(reinterpret_cast<data_ptr_t>(old),
+	    UndoFlags::UPDATE_TUPLE, sizeof(UpdateInfo) + (sizeof(sel_t) + type_size) * alloc_vector_size);
+	auto update_info = reinterpret_cast<UpdateInfo *>(base_info);
+	update_info->max = alloc_vector_size;
+	update_info->N = old->N;
+	update_info->tuples = reinterpret_cast<sel_t *>(base_info + sizeof(UpdateInfo));
+	memcpy(update_info->tuples, old->tuples, sizeof(sel_t) * old->N);
+	update_info->tuple_data = base_info + sizeof(UpdateInfo) + sizeof(sel_t) * update_info->max;
+	memcpy(update_info->tuple_data, old->tuple_data, type_size * old->N);
+	update_info->version_number = transaction_id;
+	update_info->segment = old->segment;
+	update_info->vector_index = old->vector_index;
+	update_info->real_vector_index = old->real_vector_index;
+	update_info->column_index = old->column_index;
+	update_info->append_for_update = true;
+	update_info->real_row_id = old->real_row_id;
 	return update_info;
 }
 
@@ -128,6 +171,7 @@ string DuckTransaction::Commit(AttachedDatabase &db, transaction_t commit_id, bo
 	} else {
 		log = nullptr;
 	}
+
 	try {
 		storage->Commit(commit_state, *this);
 		undo_buffer.Commit(iterator_state, log, commit_id);

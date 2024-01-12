@@ -51,9 +51,11 @@ enum class WALType : uint8_t {
 	INSERT_TUPLE = 26,
 	DELETE_TUPLE = 27,
 	UPDATE_TUPLE = 28,
+	APPEND_FOR_UPDATE_TUPLE = 29,
 	// -----------------------------
 	// Flush
 	// -----------------------------
+	WAL_VERSION = 98,
 	CHECKPOINT = 99,
 	WAL_FLUSH = 100
 };

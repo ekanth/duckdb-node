@@ -134,6 +134,40 @@ void StructColumnData::Append(BaseStatistics &stats, ColumnAppendState &state, V
 	this->count += count;
 }
 
+void StructColumnData::AppendForUpdate(TransactionData transaction, idx_t column_index, const vector<row_t> real_row_ids, BaseStatistics &stats, ColumnAppendState &state, Vector &vector, idx_t count) {
+	vector.Flatten(count);
+
+	// append the null values
+	validity.AppendForUpdate(transaction, column_index, real_row_ids, stats, state.child_appends[0], vector, count);
+
+	auto &child_entries = StructVector::GetEntries(vector);
+	for (idx_t i = 0; i < child_entries.size(); i++) {
+		sub_columns[i]->AppendForUpdate(transaction, column_index, real_row_ids, StructStats::GetChildStats(stats, i), state.child_appends[i + 1], *child_entries[i],
+		                       count);
+	}
+	this->count += count;
+}
+
+void StructColumnData::AppendColumnForUpdate(TransactionData transaction, BaseStatistics &stats, const vector<column_t> &column_path,
+										   Vector &vector, row_t *row_ids, idx_t count, idx_t depth) {
+	// we can never DIRECTLY update a struct column
+	if (depth >= column_path.size()) {
+		throw InternalException("Attempting to directly update a struct column - this should not be possible");
+	}
+	auto update_column = column_path[depth];
+	if (update_column == 0) {
+		// update the validity column
+		validity.AppendColumnForUpdate(transaction, stats, column_path, vector, row_ids, count, depth + 1);
+		this->count += count;
+	} else {
+		if (update_column > sub_columns.size()) {
+			throw InternalException("Update column_path out of range");
+		}
+		sub_columns[update_column - 1]->AppendColumnForUpdate(transaction, StructStats::GetChildStats(stats, update_column - 1), column_path,
+															  vector, row_ids, count, depth + 1);
+	}
+}
+
 void StructColumnData::RevertAppend(row_t start_row) {
 	validity.RevertAppend(start_row);
 	for (auto &sub_column : sub_columns) {
@@ -239,11 +273,11 @@ struct StructColumnCheckpointState : public ColumnCheckpointState {
 
 public:
 	unique_ptr<BaseStatistics> GetStatistics() override {
-		auto stats = StructStats::CreateEmpty(column_data.type);
+		D_ASSERT(global_stats);
 		for (idx_t i = 0; i < child_states.size(); i++) {
-			StructStats::SetChildStats(stats, i, child_states[i]->GetStatistics());
+			StructStats::SetChildStats(*global_stats, i, child_states[i]->GetStatistics());
 		}
-		return stats.ToUnique();
+		return std::move(global_stats);
 	}
 
 	void WriteDataPointers(RowGroupWriter &writer, Serializer &serializer) override {

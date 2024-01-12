@@ -4,7 +4,8 @@ all: build
 	npm install --ignore-scripts
 
 build: ./node_modules
-	./node_modules/.bin/node-pre-gyp build -j max --loglevel=silent
+#	./node_modules/.bin/node-pre-gyp build -j max --loglevel=silent
+	./node_modules/.bin/node-pre-gyp build -j max
 
 debug: ./node_modules
 	./node_modules/.bin/node-pre-gyp build -j max --debug --verbose

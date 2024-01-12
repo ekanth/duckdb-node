@@ -25,6 +25,8 @@ struct UpdateInfo {
 	//! The version number
 	atomic<transaction_t> version_number;
 	//! The vector index within the uncompressed segment
+	idx_t real_vector_index;
+	//! The vector index within the uncompressed segment
 	idx_t vector_index;
 	//! The amount of updated tuples
 	sel_t N;
@@ -38,6 +40,10 @@ struct UpdateInfo {
 	UpdateInfo *prev;
 	//! The next update info in the chain (or nullptr if it is the last)
 	UpdateInfo *next;
+	//! This update info is for an append deep down
+	bool append_for_update;
+	//! The first real_row_id(s) for append
+	row_t real_row_id;
 
 	//! Loop over the update chain and execute the specified callback on all UpdateInfo's that are relevant for that
 	//! transaction in-order of newest to oldest
@@ -45,7 +51,9 @@ struct UpdateInfo {
 	static void UpdatesForTransaction(UpdateInfo *current, transaction_t start_time, transaction_t transaction_id,
 	                                  T &&callback) {
 		while (current) {
-			if (current->version_number > start_time && current->version_number != transaction_id) {
+			if (current->version_number > start_time &&
+				current->version_number != transaction_id &&
+				!current->append_for_update) {
 				// these tuples were either committed AFTER this transaction started or are not committed yet, use
 				// tuples stored in this version
 				callback(current);

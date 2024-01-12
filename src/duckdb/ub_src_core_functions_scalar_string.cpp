@@ -28,6 +28,8 @@
 
 #include "src/core_functions/scalar/string/printf.cpp"
 
+#include "src/core_functions/scalar/string/regexp_escape.cpp"
+
 #include "src/core_functions/scalar/string/repeat.cpp"
 
 #include "src/core_functions/scalar/string/replace.cpp"

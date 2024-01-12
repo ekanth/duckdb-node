@@ -22,9 +22,7 @@ class WriteAheadLog;
 class UndoBuffer {
 public:
 	struct IteratorState {
-		ArenaChunk *current;
-		data_ptr_t start;
-		data_ptr_t end;
+		idx_t current_index;
 	};
 
 public:
@@ -33,6 +31,7 @@ public:
 	//! Reserve space for an entry of the specified type and length in the undo
 	//! buffer
 	data_ptr_t CreateEntry(UndoFlags type, idx_t len);
+	data_ptr_t ResizeEntryInPlace(data_ptr_t old, UndoFlags type, idx_t len);
 
 	bool ChangesMade();
 	idx_t EstimatedSize();
@@ -49,6 +48,7 @@ public:
 
 private:
 	ArenaAllocator allocator;
+	vector<data_ptr_t> ordered_entries;
 
 private:
 	template <class T>

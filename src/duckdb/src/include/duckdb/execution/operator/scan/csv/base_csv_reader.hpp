@@ -11,7 +11,7 @@
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/parser/parsed_data/copy_info.hpp"
 #include "duckdb/function/scalar/strftime_format.hpp"
-#include "duckdb/common/types/chunk_collection.hpp"
+
 #include "duckdb/common/enums/file_compression_type.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/queue.hpp"
@@ -83,10 +83,10 @@ public:
 
 	static unique_ptr<CSVFileHandle> OpenCSV(ClientContext &context, const CSVReaderOptions &options);
 
-	static bool TryCastDateVector(map<LogicalTypeId, StrpTimeFormat> &options, Vector &input_vector,
+	static bool TryCastDateVector(map<LogicalTypeId, CSVOption<StrpTimeFormat>> &options, Vector &input_vector,
 	                              Vector &result_vector, idx_t count, string &error_message, idx_t &line_error);
 
-	static bool TryCastTimestampVector(map<LogicalTypeId, StrpTimeFormat> &options, Vector &input_vector,
+	static bool TryCastTimestampVector(map<LogicalTypeId, CSVOption<StrpTimeFormat>> &options, Vector &input_vector,
 	                                   Vector &result_vector, idx_t count, string &error_message);
 
 protected:

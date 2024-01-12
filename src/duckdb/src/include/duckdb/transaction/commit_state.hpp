@@ -34,6 +34,7 @@ public:
 
 	unique_ptr<DataChunk> delete_chunk;
 	unique_ptr<DataChunk> update_chunk;
+	unique_ptr<DataChunk> append_for_update_chunk;
 
 public:
 	template <bool HAS_LOG>
@@ -46,6 +47,7 @@ private:
 	void WriteCatalogEntry(CatalogEntry &entry, data_ptr_t extra_data);
 	void WriteDelete(DeleteInfo &info);
 	void WriteUpdate(UpdateInfo &info);
+	void WriteAppendForUpdate(UpdateInfo &info);
 };
 
 } // namespace duckdb

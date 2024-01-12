@@ -9,7 +9,7 @@
 #include "duckdb/storage/table/column_data_checkpointer.hpp"
 #include "duckdb/storage/table/list_column_data.hpp"
 #include "duckdb/storage/table/standard_column_data.hpp"
-
+#include "duckdb/storage/table/array_column_data.hpp"
 #include "duckdb/storage/table/struct_column_data.hpp"
 #include "duckdb/storage/table/update_segment.hpp"
 #include "duckdb/storage/table_storage_info.hpp"
@@ -185,7 +185,7 @@ void ColumnData::ScanCommittedRange(idx_t row_group_start, idx_t offset_in_row_g
 	ColumnScanState child_state;
 	InitializeScanWithOffset(child_state, row_group_start + offset_in_row_group);
 	auto scan_count = ScanVector(child_state, result, count, updates ? true : false);
-	if (updates) {
+	if (updates && !updates->IsAppendForUpdate()) {
 		result.Flatten(scan_count);
 		updates->FetchCommittedRange(offset_in_row_group, count, result);
 	}
@@ -195,8 +195,6 @@ idx_t ColumnData::ScanCount(ColumnScanState &state, Vector &result, idx_t count)
 	if (count == 0) {
 		return 0;
 	}
-	// ScanCount can only be used if there are no updates
-	D_ASSERT(!updates);
 	return ScanVector(state, result, count, false);
 }
 
@@ -366,12 +364,50 @@ void ColumnData::Update(TransactionData transaction, idx_t column_index, Vector 
 	if (!updates) {
 		updates = make_uniq<UpdateSegment>(*this);
 	}
+	D_ASSERT(updates->IsAppendForUpdate() == false);
+
 	Vector base_vector(type);
 	ColumnScanState state;
 	auto fetch_count = Fetch(state, row_ids[0], base_vector);
 
 	base_vector.Flatten(fetch_count);
 	updates->Update(transaction, column_index, update_vector, row_ids, update_count, base_vector);
+}
+
+void ColumnData::AppendForUpdate(TransactionData transaction, idx_t column_index, const vector<row_t> real_row_ids,
+								 BaseStatistics &stats, ColumnAppendState &state, Vector &vector, idx_t count) {
+	auto start_offset = start + GetMaxEntry();
+	UnifiedVectorFormat vdata;
+	vector.ToUnifiedFormat(count, vdata);
+	ColumnData::AppendData(stats, state, vdata, count);
+	row_t* row_ids = new row_t[count];
+
+	for (idx_t i = 0; i < count; i++) {
+		row_ids[i] = start_offset + i;
+	}
+
+	lock_guard<mutex> update_guard(update_lock);
+	if (!updates) {
+		updates = make_uniq<UpdateSegment>(*this, true);
+	}
+	D_ASSERT(updates->IsAppendForUpdate() == true);
+
+	auto base_vector_size = AlignValue<idx_t, STANDARD_VECTOR_SIZE>(start_offset + count - start);
+	Vector base_vector(type, true, true, base_vector_size);
+
+	updates->AppendForUpdate(transaction, column_index, vector, row_ids, count, base_vector, true, real_row_ids);
+}
+
+void ColumnData::AppendColumnForUpdate(TransactionData transaction, BaseStatistics &stats,
+									   const vector<column_t> &column_path, Vector &vector,
+									   row_t *row_ids, idx_t count, idx_t depth) {
+	// this method should only be called at the end of the path in the base column case
+	D_ASSERT(depth >= column_path.size());
+    ColumnAppendState state;
+	ColumnData::InitializeAppend(state);
+	UnifiedVectorFormat vdata;
+	vector.ToUnifiedFormat(count, vdata);
+	ColumnData::AppendData(stats, state, vdata, count);
 }
 
 void ColumnData::UpdateColumn(TransactionData transaction, const vector<column_t> &column_path, Vector &update_vector,
@@ -414,7 +450,7 @@ unique_ptr<ColumnCheckpointState> ColumnData::CreateCheckpointState(RowGroup &ro
 void ColumnData::CheckpointScan(ColumnSegment &segment, ColumnScanState &state, idx_t row_group_start, idx_t count,
                                 Vector &scan_vector) {
 	segment.Scan(state, count, scan_vector, 0, true);
-	if (updates) {
+	if (updates && !updates->IsAppendForUpdate()) {
 		scan_vector.Flatten(count);
 		updates->FetchCommittedRange(state.row_index - row_group_start, count, scan_vector);
 	}
@@ -441,6 +477,7 @@ unique_ptr<ColumnCheckpointState> ColumnData::Checkpoint(RowGroup &row_group,
 
 	// replace the old tree with the new one
 	data.Replace(l, checkpoint_state->new_tree);
+	updates.reset();
 	version++;
 
 	return checkpoint_state;
@@ -544,8 +581,10 @@ void ColumnData::Verify(RowGroup &parent) {
 #ifdef DEBUG
 	D_ASSERT(this->start == parent.start);
 	data.Verify();
-	if (type.InternalType() == PhysicalType::STRUCT) {
-		// structs don't have segments
+	if (type.InternalType() == PhysicalType::STRUCT ||
+		type.InternalType() == PhysicalType::LIST ||
+		type.InternalType() == PhysicalType::ARRAY) {
+		// structs, lists and arrays don't have segments
 		D_ASSERT(!data.GetRootSegment());
 		return;
 	}
@@ -570,6 +609,8 @@ static RET CreateColumnInternal(BlockManager &block_manager, DataTableInfo &info
 		return OP::template Create<StructColumnData>(block_manager, info, column_index, start_row, type, parent);
 	} else if (type.InternalType() == PhysicalType::LIST) {
 		return OP::template Create<ListColumnData>(block_manager, info, column_index, start_row, type, parent);
+	} else if (type.InternalType() == PhysicalType::ARRAY) {
+		return OP::template Create<ArrayColumnData>(block_manager, info, column_index, start_row, type, parent);
 	} else if (type.id() == LogicalTypeId::VALIDITY) {
 		return OP::template Create<ValidityColumnData>(block_manager, info, column_index, start_row, *parent);
 	}

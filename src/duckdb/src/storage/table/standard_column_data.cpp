@@ -129,6 +129,23 @@ void StandardColumnData::UpdateColumn(TransactionData transaction, const vector<
 	}
 }
 
+void StandardColumnData::AppendForUpdate(TransactionData transaction, idx_t column_index, const vector<row_t> real_row_ids, BaseStatistics &stats,
+						 ColumnAppendState &state, Vector &vector, idx_t count){
+	validity.AppendForUpdate(transaction, column_index, real_row_ids, stats, state.child_appends[0], vector, count);
+	ColumnData::AppendForUpdate(transaction, column_index, real_row_ids, stats, state, vector, count);
+}
+
+void StandardColumnData::AppendColumnForUpdate(TransactionData transaction, BaseStatistics &stats, const vector<column_t> &column_path, Vector &vector,
+											   row_t *row_ids, idx_t count, idx_t depth) {
+	if (depth >= column_path.size()) {
+		// update this column
+		ColumnData::AppendColumnForUpdate(transaction, stats, column_path, vector, row_ids, count, depth);
+	} else {
+		// update the child column (i.e. the validity column)
+		validity.AppendColumnForUpdate(transaction, stats, column_path, vector, row_ids, count, depth + 1);
+	}
+}
+
 unique_ptr<BaseStatistics> StandardColumnData::GetUpdateStatistics() {
 	auto stats = updates ? updates->GetStatistics() : nullptr;
 	auto validity_stats = validity.GetUpdateStatistics();
@@ -189,8 +206,13 @@ StandardColumnData::CreateCheckpointState(RowGroup &row_group, PartialBlockManag
 unique_ptr<ColumnCheckpointState> StandardColumnData::Checkpoint(RowGroup &row_group,
                                                                  PartialBlockManager &partial_block_manager,
                                                                  ColumnCheckpointInfo &checkpoint_info) {
-	auto validity_state = validity.Checkpoint(row_group, partial_block_manager, checkpoint_info);
+	// we need to checkpoint the main column data first
+	// that is because the checkpointing of the main column data ALSO scans the validity data
+	// to prevent reading the validity data immediately after it is checkpointed we first checkpoint the main column
+	// this is necessary for concurrent checkpointing as due to the partial block manager checkpointed data might be
+	// flushed to disk by a different thread than the one that wrote it, causing a data race
 	auto base_state = ColumnData::Checkpoint(row_group, partial_block_manager, checkpoint_info);
+	auto validity_state = validity.Checkpoint(row_group, partial_block_manager, checkpoint_info);
 	auto &checkpoint_state = base_state->Cast<StandardColumnCheckpointState>();
 	checkpoint_state.validity_state = std::move(validity_state);
 	return base_state;

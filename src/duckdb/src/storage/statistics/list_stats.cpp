@@ -9,23 +9,28 @@
 namespace duckdb {
 
 void ListStats::Construct(BaseStatistics &stats) {
-	stats.child_stats = unsafe_unique_array<BaseStatistics>(new BaseStatistics[1]);
+	stats.child_stats = unsafe_unique_array<BaseStatistics>(new BaseStatistics[2]);
 	BaseStatistics::Construct(stats.child_stats[0], ListType::GetChildType(stats.GetType()));
+	BaseStatistics::Construct(stats.child_stats[1], ListType::GetOffsetLengthType(stats.GetType()));
 }
 
 BaseStatistics ListStats::CreateUnknown(LogicalType type) {
 	auto &child_type = ListType::GetChildType(type);
+	auto &offset_length_type = ListType::GetOffsetLengthType(type);
 	BaseStatistics result(std::move(type));
 	result.InitializeUnknown();
 	result.child_stats[0].Copy(BaseStatistics::CreateUnknown(child_type));
+	result.child_stats[1].Copy(BaseStatistics::CreateUnknown(offset_length_type));
 	return result;
 }
 
 BaseStatistics ListStats::CreateEmpty(LogicalType type) {
 	auto &child_type = ListType::GetChildType(type);
+	auto &offset_length_type = ListType::GetOffsetLengthType(type);
 	BaseStatistics result(std::move(type));
 	result.InitializeEmpty();
 	result.child_stats[0].Copy(BaseStatistics::CreateEmpty(child_type));
+	result.child_stats[1].Copy(BaseStatistics::CreateEmpty(offset_length_type));
 	return result;
 }
 
@@ -33,6 +38,7 @@ void ListStats::Copy(BaseStatistics &stats, const BaseStatistics &other) {
 	D_ASSERT(stats.child_stats);
 	D_ASSERT(other.child_stats);
 	stats.child_stats[0].Copy(other.child_stats[0]);
+	stats.child_stats[1].Copy(other.child_stats[1]);
 }
 
 const BaseStatistics &ListStats::GetChildStats(const BaseStatistics &stats) {
@@ -42,6 +48,7 @@ const BaseStatistics &ListStats::GetChildStats(const BaseStatistics &stats) {
 	D_ASSERT(stats.child_stats);
 	return stats.child_stats[0];
 }
+
 BaseStatistics &ListStats::GetChildStats(BaseStatistics &stats) {
 	if (stats.GetStatsType() != StatisticsType::LIST_STATS) {
 		throw InternalException("ListStats::GetChildStats called on stats that is not a list");
@@ -58,6 +65,30 @@ void ListStats::SetChildStats(BaseStatistics &stats, unique_ptr<BaseStatistics> 
 	}
 }
 
+const BaseStatistics &ListStats::GetOffsetLengthStats(const BaseStatistics &stats) {
+	if (stats.GetStatsType() != StatisticsType::LIST_STATS) {
+		throw InternalException("ListStats::GetOffsetLengthStats called on stats that is not a list");
+	}
+	D_ASSERT(stats.child_stats);
+	return stats.child_stats[1];
+}
+
+BaseStatistics &ListStats::GetOffsetLengthStats(BaseStatistics &stats) {
+	if (stats.GetStatsType() != StatisticsType::LIST_STATS) {
+		throw InternalException("ListStats::GetOffsetLengthStats called on stats that is not a list");
+	}
+	D_ASSERT(stats.child_stats);
+	return stats.child_stats[1];
+}
+
+void ListStats::SetOffsetLengthStats(BaseStatistics &stats, unique_ptr<BaseStatistics> new_stats) {
+	if (!new_stats) {
+		stats.child_stats[1].Copy(BaseStatistics::CreateUnknown(ListType::GetOffsetLengthType(stats.GetType())));
+	} else {
+		stats.child_stats[1].Copy(*new_stats);
+	}
+}
+
 void ListStats::Merge(BaseStatistics &stats, const BaseStatistics &other) {
 	if (other.GetType().id() == LogicalTypeId::VALIDITY) {
 		return;
@@ -66,11 +97,17 @@ void ListStats::Merge(BaseStatistics &stats, const BaseStatistics &other) {
 	auto &child_stats = ListStats::GetChildStats(stats);
 	auto &other_child_stats = ListStats::GetChildStats(other);
 	child_stats.Merge(other_child_stats);
+
+	auto &offset_length_stats = ListStats::GetOffsetLengthStats(stats);
+	auto &other_offset_length_stats = ListStats::GetOffsetLengthStats(other);
+	offset_length_stats.Merge(other_offset_length_stats);
 }
 
 void ListStats::Serialize(const BaseStatistics &stats, Serializer &serializer) {
 	auto &child_stats = ListStats::GetChildStats(stats);
 	serializer.WriteProperty(200, "child_stats", child_stats);
+	auto &offset_length_stats = ListStats::GetOffsetLengthStats(stats);
+	serializer.WriteProperty(201, "offset_length_stats", offset_length_stats);
 }
 
 void ListStats::Deserialize(Deserializer &deserializer, BaseStatistics &base) {
@@ -82,11 +119,20 @@ void ListStats::Deserialize(Deserializer &deserializer, BaseStatistics &base) {
 	deserializer.Set<LogicalType &>(const_cast<LogicalType &>(child_type));
 	base.child_stats[0].Copy(deserializer.ReadProperty<BaseStatistics>(200, "child_stats"));
 	deserializer.Unset<LogicalType>();
+
+	auto &offset_length_type = ListType::GetOffsetLengthType(type);
+
+	// Push the logical type of the child type to the deserialization context
+	deserializer.Set<LogicalType &>(const_cast<LogicalType &>(offset_length_type));
+	base.child_stats[1].Copy(deserializer.ReadProperty<BaseStatistics>(201, "offset_length_stats"));
+	deserializer.Unset<LogicalType>();
+
 }
 
 string ListStats::ToString(const BaseStatistics &stats) {
 	auto &child_stats = ListStats::GetChildStats(stats);
-	return StringUtil::Format("[%s]", child_stats.ToString());
+	auto &offset_length_stats = ListStats::GetOffsetLengthStats(stats);
+	return StringUtil::Format("Child Stats: [%s] \nOffset Length Stats: [%s]", child_stats.ToString(), offset_length_stats.ToString());
 }
 
 void ListStats::Verify(const BaseStatistics &stats, Vector &vector, const SelectionVector &sel, idx_t count) {

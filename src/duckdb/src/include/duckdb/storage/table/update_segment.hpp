@@ -22,7 +22,7 @@ struct UpdateNode;
 
 class UpdateSegment {
 public:
-	UpdateSegment(ColumnData &column_data);
+	UpdateSegment(ColumnData &column_data, bool append_for_update = false);
 	~UpdateSegment();
 
 	ColumnData &column_data;
@@ -37,12 +37,16 @@ public:
 	void FetchCommitted(idx_t vector_index, Vector &result);
 	void FetchCommittedRange(idx_t start_row, idx_t count, Vector &result);
 	void Update(TransactionData transaction, idx_t column_index, Vector &update, row_t *ids, idx_t count,
-	            Vector &base_data);
+	            Vector &base_data, bool append_for_update = false, const vector<row_t> &real_row_ids = vector<row_t>());
+	void AppendForUpdate(TransactionData transaction, idx_t column_index, Vector &update, row_t *ids, idx_t count,
+	            Vector &base_data, bool append_for_update = false, const vector<row_t> &real_row_ids = vector<row_t>());
 	void FetchRow(TransactionData transaction, idx_t row_id, Vector &result, idx_t result_idx);
 
 	void RollbackUpdate(UpdateInfo &info);
 	void CleanupUpdateInternal(const StorageLockKey &lock, UpdateInfo &info);
 	void CleanupUpdate(UpdateInfo &info);
+
+	bool IsAppendForUpdate() const;
 
 	unique_ptr<BaseStatistics> GetStatistics();
 	StringHeap &GetStringHeap() {
@@ -62,6 +66,8 @@ private:
 	idx_t type_size;
 	//! String heap, only used for strings
 	StringHeap heap;
+	//! Whether or not this segment is for append_for_update
+	bool append_for_update;
 
 public:
 	typedef void (*initialize_update_function_t)(UpdateInfo *base_info, Vector &base_data, UpdateInfo *update_info,
@@ -91,7 +97,8 @@ private:
 
 private:
 	void InitializeUpdateInfo(UpdateInfo &info, row_t *ids, const SelectionVector &sel, idx_t count, idx_t vector_index,
-	                          idx_t vector_offset);
+	                          idx_t vector_offset, bool append_for_update, const vector<row_t> &real_row_ids);
+	UpdateInfo *ResizeBaseUpdateInfo(idx_t real_vector_index, idx_t count, idx_t column_index);
 };
 
 struct UpdateNodeData {

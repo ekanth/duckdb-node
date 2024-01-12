@@ -23,6 +23,8 @@ public:
 	unique_ptr<ColumnData> child_column;
 	//! The validity column data of the struct
 	ValidityColumnData validity;
+	//! The list offset and length
+	unique_ptr<ColumnData> offset_length_column;
 
 public:
 	void SetStart(idx_t new_start) override;
@@ -47,6 +49,10 @@ public:
 	            idx_t update_count) override;
 	void UpdateColumn(TransactionData transaction, const vector<column_t> &column_path, Vector &update_vector,
 	                  row_t *row_ids, idx_t update_count, idx_t depth) override;
+	void AppendForUpdate(TransactionData transaction, idx_t column_index, const vector<row_t> real_row_ids,
+                         BaseStatistics &stats, ColumnAppendState &state, Vector &vector, idx_t count) override;
+	void AppendColumnForUpdate(TransactionData transaction, BaseStatistics &stats, const vector<column_t> &column_path,
+                               Vector &vector, row_t *row_ids, idx_t count, idx_t depth) override;
 	unique_ptr<BaseStatistics> GetUpdateStatistics() override;
 
 	void CommitDropColumn() override;
@@ -62,7 +68,8 @@ public:
 	                          vector<duckdb::ColumnSegmentInfo> &result) override;
 
 private:
-	uint64_t FetchListOffset(idx_t row_idx);
+	list_entry_t FetchListOffset(idx_t row_idx);
+	idx_t ScanHelper(Vector &offset_length_vector, idx_t scan_count, ColumnScanState &state, Vector &result);
 };
 
 } // namespace duckdb
