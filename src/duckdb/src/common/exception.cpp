@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #endif
+#define DUCKDB_DEBUG_STACKTRACE
 #ifdef DUCKDB_DEBUG_STACKTRACE
 #include <execinfo.h>
 #endif

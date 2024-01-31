@@ -15,7 +15,8 @@
 namespace duckdb {
 struct FileHandle;
 
-#define STANDARD_ROW_GROUPS_SIZE 122880
+//#define STANDARD_ROW_GROUPS_SIZE 122880
+#define STANDARD_ROW_GROUPS_SIZE 20480
 #if STANDARD_ROW_GROUPS_SIZE < STANDARD_VECTOR_SIZE
 #error Row groups should be able to hold at least one vector
 #endif

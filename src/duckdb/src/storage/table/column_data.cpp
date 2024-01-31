@@ -184,8 +184,9 @@ idx_t ColumnData::ScanCommitted(idx_t vector_index, ColumnScanState &state, Vect
 void ColumnData::ScanCommittedRange(idx_t row_group_start, idx_t offset_in_row_group, idx_t count, Vector &result) {
 	ColumnScanState child_state;
 	InitializeScanWithOffset(child_state, row_group_start + offset_in_row_group);
-	auto scan_count = ScanVector(child_state, result, count, updates ? true : false);
-	if (updates && !updates->IsAppendForUpdate()) {
+	bool has_updates = updates && !updates->IsAppendForUpdate();
+	auto scan_count = ScanVector(child_state, result, count, has_updates);
+	if (has_updates && !updates->IsAppendForUpdate()) {
 		result.Flatten(scan_count);
 		updates->FetchCommittedRange(offset_in_row_group, count, result);
 	}

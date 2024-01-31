@@ -92,6 +92,10 @@ void ColumnSegment::Scan(ColumnScanState &state, idx_t scan_count, Vector &resul
 		D_ASSERT(result_offset == 0);
 		Scan(state, scan_count, result);
 	} else {
+		if (result.GetVectorType() != VectorType::FLAT_VECTOR) {
+		    std::cout << "Expected FLAT_VECTOR, but received: " << VectorTypeToString(result.GetVectorType()) << std::endl;
+		    std::cout << Exception::GetStackTrace(30) << std::endl;
+		}
 		D_ASSERT(result.GetVectorType() == VectorType::FLAT_VECTOR);
 		ScanPartial(state, scan_count, result, result_offset);
 		D_ASSERT(result.GetVectorType() == VectorType::FLAT_VECTOR);

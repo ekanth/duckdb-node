@@ -282,8 +282,15 @@ struct RunPreparedTask : public Task {
 			return;
 		}
 
-		result =
-		    statement.statement->Execute(params->params, run_type != RunType::ALL && run_type != RunType::ARROW_ALL);
+		try {
+		    result =
+			statement.statement->Execute(params->params, run_type != RunType::ALL && run_type != RunType::ARROW_ALL);
+		    success = true;
+		} catch (const duckdb::Exception &ex) {
+		    std::cout << "Exception in RunPreparedTask::DoWork: " << ex.what() << std::endl;
+		    std::cout << "  Query: " << statement.statement->query << std::endl;
+		    error = duckdb::PreservedError(ex);
+		}
 	}
 
 	void Callback() override {
@@ -299,6 +306,10 @@ struct RunPreparedTask : public Task {
 		}
 		if (statement.statement->HasError()) {
 			cb.MakeCallback(statement.Value(), {Utils::CreateError(env, statement.statement->GetErrorObject())});
+			return;
+		}
+		if (!success) {
+			cb.MakeCallback(statement.Value(), {Utils::CreateError(env, error)});
 			return;
 		}
 		if (result->HasError()) {
@@ -421,6 +432,8 @@ struct RunPreparedTask : public Task {
 	unique_ptr<duckdb::QueryResult> result;
 	unique_ptr<StatementParam> params;
 	RunType run_type;
+	duckdb::PreservedError error;
+	bool success = false;
 };
 
 struct RunQueryTask : public Task {
@@ -431,10 +444,22 @@ struct RunQueryTask : public Task {
 	void DoWork() override {
 		auto &statement = Get<Statement>();
 		if (!statement.statement || statement.statement->HasError()) {
+			if (!statement.statement) {
+			    error = duckdb::PreservedError(duckdb::InvalidInputException("Statement was finalized"));
+			} else {
+			    error = duckdb::PreservedError(statement.statement->GetErrorObject());
+			}
 			return;
 		}
 
-		result = statement.statement->Execute(params->params, true);
+		try {
+		    result = statement.statement->Execute(params->params, true);
+		    success = true;
+		} catch (const duckdb::Exception &ex) {
+		    std::cout << "Exception in RunQueryTask::DoWork: " << ex.what() << std::endl;
+		    std::cout << "  Query: " << statement.statement->query << std::endl;
+		    error = duckdb::PreservedError(ex);
+		}
 	}
 
 	void DoCallback() override {
@@ -446,6 +471,8 @@ struct RunQueryTask : public Task {
 			deferred.Reject(Utils::CreateError(env, "statement was finalized"));
 		} else if (statement.statement->HasError()) {
 			deferred.Reject(Utils::CreateError(env, statement.statement->GetErrorObject()));
+		} else if (!success) {
+			deferred.Reject(Utils::CreateError(env, error));
 		} else if (result->HasError()) {
 			deferred.Reject(Utils::CreateError(env, result->GetErrorObject()));
 		} else {
@@ -460,6 +487,8 @@ struct RunQueryTask : public Task {
 	Napi::Promise::Deferred deferred;
 	unique_ptr<duckdb::QueryResult> result;
 	unique_ptr<StatementParam> params;
+	duckdb::PreservedError error;
+	bool success = false;
 };
 
 unique_ptr<StatementParam> Statement::HandleArgs(const Napi::CallbackInfo &info) {

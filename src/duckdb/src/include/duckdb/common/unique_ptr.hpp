@@ -4,6 +4,7 @@
 #include "duckdb/common/likely.hpp"
 #include "duckdb/common/memory_safety.hpp"
 
+#include <iostream>
 #include <memory>
 #include <type_traits>
 
@@ -21,6 +22,7 @@ private:
 		return;
 #else
 		if (DUCKDB_UNLIKELY(null)) {
+			std::cout << "[1]: " << Exception::GetStackTrace(25) << std::endl;
 			throw duckdb::InternalException("Attempted to dereference unique_ptr that is NULL!");
 		}
 #endif
@@ -65,6 +67,7 @@ private:
 		return;
 #else
 		if (DUCKDB_UNLIKELY(null)) {
+			std::cout << "[2]: " << Exception::GetStackTrace(25) << std::endl;
 			throw duckdb::InternalException("Attempted to dereference unique_ptr that is NULL!");
 		}
 #endif
