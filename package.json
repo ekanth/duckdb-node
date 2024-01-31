@@ -52,6 +52,7 @@
       "tsconfig-paths/register"
     ]
   },
+  "os": ["!win32"],
   "keywords": [
     "database",
     "sql",
